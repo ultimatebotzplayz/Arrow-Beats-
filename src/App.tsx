@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Play, Pause, RotateCcw, Trophy, Music, Settings, Keyboard, TrendingUp, ArrowLeft, ArrowDown, ArrowUp, ArrowRight, List, X, Medal, User, LogOut, LogIn } from 'lucide-react';
+import { Play, Pause, RotateCcw, Trophy, Music, Settings, Keyboard, TrendingUp, ArrowLeft, ArrowDown, ArrowUp, ArrowRight, List, X, Medal, User, LogOut, LogIn, Bug } from 'lucide-react';
 
 import YouTube, { YouTubeProps } from 'react-youtube';
 
@@ -9,9 +9,10 @@ const LANE_KEYS = ['d', 'f', 'j', 'k'] as const;
 const LANE_COLORS = ['#ef4444', '#f59e0b', '#3b82f6', '#10b981']; // Red, Yellow, Blue, Green
 const LANE_ICONS = [ArrowLeft, ArrowDown, ArrowUp, ArrowRight];
 const NOTE_SPEED = 0.6; // pixels per ms
-const HIT_WINDOW_PERFECT = 60;
-const HIT_WINDOW_GREAT = 110;
-const HIT_WINDOW_GOOD = 160;
+const HIT_WINDOW_PERFECT = 45;
+const HIT_WINDOW_GREAT = 90;
+const HIT_WINDOW_GOOD = 135;
+const HIT_WINDOW_OKAY = 180;
 const SPAWN_Y = -50;
 const HIT_LINE_Y = 500;
 const CANVAS_WIDTH = 400;
@@ -35,6 +36,7 @@ interface ScoreState {
   perfect: number;
   great: number;
   good: number;
+  okay: number;
   miss: number;
 }
 
@@ -52,6 +54,9 @@ interface LeaderboardEntry {
 interface UserData {
   id: number;
   username: string;
+  xp: number;
+  level: number;
+  email?: string;
 }
 
 interface Song {
@@ -79,8 +84,8 @@ const DIFFICULTIES: Difficulty[] = [
   { name: 'EASY', color: '#22c55e', multiplier: 0.6 },
   { name: 'MEDIUM', color: '#eab308', multiplier: 1.0 },
   { name: 'HARD', color: '#ef4444', multiplier: 1.5 },
-  { name: 'EXPERT', color: '#ec4899', multiplier: 2.0 },
-  { name: 'MASTER', color: '#a855f7', multiplier: 2.5 },
+  { name: 'EXPERT', color: '#ec4899', multiplier: 1.8 },
+  { name: 'MASTER', color: '#a855f7', multiplier: 2.0 },
 ];
 
 const INITIAL_SCORE: ScoreState = {
@@ -90,6 +95,7 @@ const INITIAL_SCORE: ScoreState = {
   perfect: 0,
   great: 0,
   good: 0,
+  okay: 0,
   miss: 0,
 };
 
@@ -100,7 +106,7 @@ const generateMockSong = (durationMs: number, multiplier: number): Note[] => {
   const notes: Note[] = [];
   let id = 0;
   const baseInterval = 800 / multiplier;
-  for (let t = 2000; t < durationMs; t += (baseInterval * 0.5) + Math.random() * baseInterval) {
+  for (let t = 1000; t < durationMs; t += (baseInterval * 0.5) + Math.random() * baseInterval) {
     const lane = Math.floor(Math.random() * 4);
     notes.push({ id: id++, lane, timestamp: t, hit: false, missed: false });
   }
@@ -116,11 +122,13 @@ export default function App() {
   const [activeKeys, setActiveKeys] = useState<Record<string, boolean>>({});
   const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
   const [showLeaderboard, setShowLeaderboard] = useState(false);
+  const [showSupport, setShowSupport] = useState(false);
+  const [supportMessage, setSupportMessage] = useState('');
   
   const [user, setUser] = useState<UserData | null>(null);
   const [showAuthModal, setShowAuthModal] = useState(false);
-  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
-  const [authForm, setAuthForm] = useState({ username: '', password: '' });
+  const [authMode, setAuthMode] = useState<'login' | 'register' | 'forgot'>('login');
+  const [authForm, setAuthForm] = useState({ username: '', password: '', email: '' });
   const [authError, setAuthError] = useState('');
   
   const [selectedSong, setSelectedSong] = useState<Song>(SONGS[0]);
@@ -198,7 +206,7 @@ export default function App() {
 
   const saveToLeaderboard = async (finalScore: number, finalMaxCombo: number) => {
     try {
-      await fetch('/api/scores', {
+      const res = await fetch('/api/scores', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -210,6 +218,11 @@ export default function App() {
           difficulty: selectedDifficulty.name
         })
       });
+      const data = await res.json();
+      if (data.success && data.user) {
+        setUser(data.user);
+        localStorage.setItem('arrow_beats_user', JSON.stringify(data.user));
+      }
       fetchLeaderboard();
     } catch (e) {
       console.error("Failed to save score", e);
@@ -219,6 +232,27 @@ export default function App() {
   const handleAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthError('');
+    
+    if (authMode === 'forgot') {
+      try {
+        const res = await fetch('/api/reset-password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username: authForm.username, newPassword: authForm.password })
+        });
+        const data = await res.json();
+        if (data.success) {
+          setAuthMode('login');
+          setAuthError('Password reset! Please login.');
+        } else {
+          setAuthError(data.error);
+        }
+      } catch (e) {
+        setAuthError('Connection failed');
+      }
+      return;
+    }
+
     const endpoint = authMode === 'login' ? '/api/login' : '/api/register';
     try {
       const res = await fetch(endpoint, {
@@ -231,12 +265,38 @@ export default function App() {
         setUser(data.user);
         localStorage.setItem('arrow_beats_user', JSON.stringify(data.user));
         setShowAuthModal(false);
-        setAuthForm({ username: '', password: '' });
+        setAuthForm({ username: '', password: '', email: '' });
       } else {
         setAuthError(data.error);
       }
     } catch (e) {
       setAuthError('Connection failed');
+    }
+  };
+
+  const handleSocialAuth = async (provider: 'facebook' | 'google') => {
+    setAuthError('');
+    // Mock social login
+    const providerId = Math.random().toString(36).substring(7);
+    const mockUsername = `${provider}_user_${providerId}`;
+    const mockEmail = `${mockUsername}@example.com`;
+    
+    try {
+      const res = await fetch('/api/auth/social', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ provider, providerId, username: mockUsername, email: mockEmail })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setUser(data.user);
+        localStorage.setItem('arrow_beats_user', JSON.stringify(data.user));
+        setShowAuthModal(false);
+      } else {
+        setAuthError(data.error);
+      }
+    } catch (e) {
+      setAuthError('Social login failed');
     }
   };
 
@@ -268,6 +328,12 @@ export default function App() {
     
     startTimeRef.current = performance.now();
     setGameState('playing');
+    
+    // Ensure first frame is drawn
+    setTimeout(() => {
+      if (requestRef.current) cancelAnimationFrame(requestRef.current);
+      requestRef.current = requestAnimationFrame(update);
+    }, 50);
   };
 
   const togglePause = () => {
@@ -338,30 +404,38 @@ export default function App() {
       Math.abs(curr.timestamp - currentTime) < Math.abs(prev.timestamp - currentTime) ? curr : prev
     );
 
-    const diff = Math.abs(closestNote.timestamp - currentTime);
+    const diff = currentTime - closestNote.timestamp;
+    const absDiff = Math.abs(diff);
 
-    if (diff <= HIT_WINDOW_GOOD) {
+    if (absDiff <= HIT_WINDOW_OKAY) {
       closestNote.hit = true;
       
       let points = 0;
       let judgement = '';
       let color = '#ffffff';
+      const isLate = diff > 20; // Small buffer for "Perfect"
+      const isEarly = diff < -20;
       
-      if (diff <= HIT_WINDOW_PERFECT) {
+      if (absDiff <= HIT_WINDOW_PERFECT) {
         points = 300;
         judgement = 'PERFECT';
         color = '#FFD700';
         setScore(s => ({ ...s, perfect: s.perfect + 1, score: s.score + points, combo: s.combo + 1, maxCombo: Math.max(s.maxCombo, s.combo + 1) }));
-      } else if (diff <= HIT_WINDOW_GREAT) {
+      } else if (absDiff <= HIT_WINDOW_GREAT) {
         points = 200;
-        judgement = 'GOOD';
+        judgement = isLate ? 'LATE GREAT' : isEarly ? 'EARLY GREAT' : 'GREAT';
         color = '#34d399';
         setScore(s => ({ ...s, great: s.great + 1, score: s.score + points, combo: s.combo + 1, maxCombo: Math.max(s.maxCombo, s.combo + 1) }));
-      } else {
+      } else if (absDiff <= HIT_WINDOW_GOOD) {
         points = 100;
-        judgement = 'OKAY';
-        color = '#fbbf24';
+        judgement = isLate ? 'LATE GOOD' : isEarly ? 'EARLY GOOD' : 'GOOD';
+        color = '#3b82f6';
         setScore(s => ({ ...s, good: s.good + 1, score: s.score + points, combo: s.combo + 1, maxCombo: Math.max(s.maxCombo, s.combo + 1) }));
+      } else {
+        points = 50;
+        judgement = isLate ? 'LATE OKAY' : isEarly ? 'EARLY OKAY' : 'OKAY';
+        color = '#fbbf24';
+        setScore(s => ({ ...s, okay: s.okay + 1, score: s.score + points, combo: s.combo + 1, maxCombo: Math.max(s.maxCombo, s.combo + 1) }));
       }
       
       hitEffectsRef.current.push({ lane: laneIndex, time: performance.now(), color });
@@ -493,7 +567,7 @@ export default function App() {
       const y = HIT_LINE_Y - (note.timestamp - elapsed) * NOTE_SPEED;
 
       // Check for miss
-      if (!note.missed && elapsed > note.timestamp + HIT_WINDOW_GOOD) {
+      if (!note.missed && elapsed > note.timestamp + HIT_WINDOW_OKAY) {
         note.missed = true;
         setScore(s => ({ ...s, miss: s.miss + 1, combo: 0 }));
         setLastJudgement('MISS');
@@ -513,10 +587,12 @@ export default function App() {
         ctx.save();
         ctx.translate(x, y);
         // Rotate based on lane
-        if (note.lane === 0) ctx.rotate(0); // Left (default for our path)
-        if (note.lane === 1) ctx.rotate(Math.PI * 1.5); // Down
-        if (note.lane === 2) ctx.rotate(Math.PI * 0.5); // Up
-        if (note.lane === 3) ctx.rotate(Math.PI); // Right
+        // Lane 0: Left, Lane 1: Down, Lane 2: Up, Lane 3: Right
+        // Path is pointing Right by default
+        if (note.lane === 0) ctx.rotate(Math.PI); // Left
+        if (note.lane === 1) ctx.rotate(Math.PI * 0.5); // Down
+        if (note.lane === 2) ctx.rotate(Math.PI * 1.5); // Up
+        if (note.lane === 3) ctx.rotate(0); // Right
         
         // Draw Arrow Path centered
         const arrowSize = size;
@@ -609,6 +685,16 @@ export default function App() {
 
       {/* Version Tag & User Profile */}
       <div className="fixed top-6 right-6 z-[200] flex items-center gap-4">
+        {gameState === 'playing' && (
+          <motion.button 
+            whileHover={{ scale: 1.1 }}
+            whileTap={{ scale: 0.9 }}
+            onClick={togglePause}
+            className="p-3 bg-zinc-900/80 backdrop-blur-md border border-zinc-800 rounded-2xl hover:border-zinc-700 transition-colors shadow-xl"
+          >
+            {isPaused ? <Play className="w-5 h-5 text-emerald-500" /> : <Pause className="w-5 h-5 text-zinc-400" />}
+          </motion.button>
+        )}
         {user ? (
           <div className={`flex items-center gap-3 bg-zinc-900/50 backdrop-blur-md border ${user.username === ADMIN_USERNAME ? 'border-orange-500/50 shadow-[0_0_20px_rgba(249,115,22,0.2)]' : 'border-zinc-800'} px-4 py-2 rounded-2xl relative`}>
             {user.username === ADMIN_USERNAME && (
@@ -638,7 +724,7 @@ export default function App() {
             </div>
             <div className="text-left">
               <div className={`text-[10px] font-black italic tracking-tighter ${user.username === ADMIN_USERNAME ? 'text-orange-500' : 'text-blue-500'} uppercase leading-none`}>
-                {user.username === ADMIN_USERNAME ? 'Admin Access' : 'Logged In'}
+                {user.username === ADMIN_USERNAME ? 'Admin Access' : `Level ${user.level || 1}`}
               </div>
               <div className="text-xs font-bold text-white flex items-center gap-1">
                 {user.username}
@@ -651,6 +737,12 @@ export default function App() {
                     STAFF
                   </motion.span>
                 )}
+              </div>
+              <div className="w-16 h-1 bg-zinc-800 rounded-full mt-1 overflow-hidden">
+                <div 
+                  className="h-full bg-blue-500" 
+                  style={{ width: `${((user.xp || 0) % 500) / 5}%` }}
+                />
               </div>
             </div>
             <button 
@@ -671,7 +763,7 @@ export default function App() {
         )}
         <div className="bg-zinc-900/50 backdrop-blur-md border border-zinc-800 px-3 py-1 rounded-full pointer-events-none">
           <span className="text-[10px] font-black italic tracking-tighter text-zinc-500 uppercase">Version</span>
-          <span className="ml-2 text-[10px] font-black italic tracking-tighter text-blue-500">0.0.0.2</span>
+          <span className="ml-2 text-[10px] font-black italic tracking-tighter text-blue-500">0.0.0.3</span>
         </div>
       </div>
 
@@ -715,8 +807,21 @@ export default function App() {
               </div>
 
               <form onSubmit={handleAuth} className="space-y-4">
+                {authMode === 'register' && (
+                  <div>
+                    <label className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest mb-2 block">Email Address</label>
+                    <input 
+                      type="email"
+                      required
+                      value={authForm.email}
+                      onChange={e => setAuthForm(prev => ({ ...prev, email: e.target.value }))}
+                      className="w-full bg-zinc-800 border border-zinc-700 rounded-xl px-4 py-3 text-sm focus:outline-none focus:border-blue-500 transition-colors"
+                      placeholder="Enter email"
+                    />
+                  </div>
+                )}
                 <div>
-                  <label className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest mb-2 block">Username</label>
+                  <label className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest mb-2 block">Username or Email</label>
                   <input 
                     type="text"
                     required
@@ -746,17 +851,47 @@ export default function App() {
                   type="submit"
                   className="w-full py-4 bg-white text-black font-black italic rounded-xl hover:bg-blue-400 transition-all active:scale-95"
                 >
-                  {authMode === 'login' ? 'LOGIN' : 'REGISTER'}
+                  {authMode === 'login' ? 'LOGIN' : authMode === 'register' ? 'REGISTER' : 'RESET PASSWORD'}
                 </button>
               </form>
 
-              <div className="mt-6 text-center">
+              <div className="mt-6 space-y-4">
+                <div className="relative">
+                  <div className="absolute inset-0 flex items-center"><div className="w-full border-t border-zinc-800"></div></div>
+                  <div className="relative flex justify-center text-[8px] uppercase font-bold tracking-widest"><span className="bg-zinc-900 px-2 text-zinc-600">Or continue with</span></div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <button 
+                    onClick={() => handleSocialAuth('facebook')}
+                    className="flex items-center justify-center gap-2 py-3 bg-[#1877F2] text-white rounded-xl text-[10px] font-bold uppercase tracking-widest hover:opacity-90 transition-opacity"
+                  >
+                    Facebook
+                  </button>
+                  <button 
+                    onClick={() => setAuthMode('register')}
+                    className="flex items-center justify-center gap-2 py-3 bg-zinc-800 text-white rounded-xl text-[10px] font-bold uppercase tracking-widest hover:bg-zinc-700 transition-colors"
+                  >
+                    Email
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-6 text-center space-y-3">
                 <button 
                   onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')}
-                  className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest hover:text-white transition-colors"
+                  className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest hover:text-white transition-colors block w-full"
                 >
                   {authMode === 'login' ? "Don't have an account? Register" : "Already have an account? Login"}
                 </button>
+                {authMode === 'login' && (
+                  <button 
+                    onClick={() => setAuthMode('forgot')}
+                    className="text-[10px] text-zinc-600 font-bold uppercase tracking-widest hover:text-zinc-400 transition-colors block w-full"
+                  >
+                    Forgot Password?
+                  </button>
+                )}
               </div>
             </motion.div>
           </motion.div>
@@ -796,6 +931,62 @@ export default function App() {
             </p>
           </motion.div>
         ) : null}
+
+        {/* Support Modal */}
+        <AnimatePresence>
+          {showSupport && (
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="fixed inset-0 z-[300] flex items-center justify-center p-6 bg-black/80 backdrop-blur-sm"
+            >
+              <motion.div
+                initial={{ scale: 0.9, y: 20 }}
+                animate={{ scale: 1, y: 0 }}
+                exit={{ scale: 0.9, y: 20 }}
+                className="bg-zinc-900 border border-zinc-800 p-8 rounded-[32px] max-w-md w-full shadow-2xl relative"
+              >
+                <div className="absolute -top-24 -left-24 w-48 h-48 bg-blue-500/10 blur-[100px]" />
+                
+                <div className="flex justify-between items-center mb-8 relative">
+                  <h2 className="text-3xl font-black italic tracking-tighter uppercase">Bug Support</h2>
+                  <button onClick={() => setShowSupport(false)} className="p-2 hover:bg-zinc-800 rounded-full transition-colors">
+                    <X className="w-6 h-6" />
+                  </button>
+                </div>
+                
+                <div className="space-y-6 relative">
+                  <p className="text-zinc-500 text-[10px] font-bold uppercase tracking-widest leading-relaxed">
+                    Found a bug? Describe it below and our team will investigate.
+                  </p>
+                  <textarea
+                    value={supportMessage}
+                    onChange={(e) => setSupportMessage(e.target.value)}
+                    placeholder="Describe the issue..."
+                    className="w-full bg-zinc-950 border border-zinc-800 rounded-2xl p-4 text-white placeholder:text-zinc-700 focus:border-blue-500 outline-none transition-colors min-h-[150px] resize-none font-medium text-sm"
+                  />
+                  <button
+                    onClick={async () => {
+                      if (!supportMessage.trim()) return;
+                      await fetch('/api/support', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ username: user?.username || 'Guest', message: supportMessage })
+                      });
+                      setSupportMessage('');
+                      setShowSupport(false);
+                      alert('Bug report sent! Thank you.');
+                    }}
+                    className="w-full py-4 bg-blue-500 text-black font-black italic rounded-xl hover:bg-blue-400 transition-all uppercase tracking-widest shadow-xl shadow-blue-500/20"
+                  >
+                    Send Report
+                  </button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         {showLeaderboard && (
           <motion.div
@@ -987,7 +1178,7 @@ export default function App() {
                 )}
               </button>
               
-              <div className="flex justify-center">
+              <div className="flex justify-center gap-4">
                 <motion.button
                   whileHover={{ scale: 1.1, rotate: 5 }}
                   whileTap={{ scale: 0.9 }}
@@ -995,6 +1186,14 @@ export default function App() {
                   className="w-16 h-16 rounded-full bg-zinc-900 border border-zinc-800 flex items-center justify-center text-amber-500 shadow-lg shadow-amber-500/10 hover:border-amber-500/50 transition-colors"
                 >
                   <Trophy className="w-8 h-8" />
+                </motion.button>
+                <motion.button
+                  whileHover={{ scale: 1.1, rotate: -5 }}
+                  whileTap={{ scale: 0.9 }}
+                  onClick={() => setShowSupport(true)}
+                  className="w-16 h-16 rounded-full bg-zinc-900 border border-zinc-800 flex items-center justify-center text-blue-500 shadow-lg shadow-blue-500/10 hover:border-blue-500/50 transition-colors"
+                >
+                  <Bug className="w-8 h-8" />
                 </motion.button>
               </div>
             </div>
@@ -1015,24 +1214,18 @@ export default function App() {
             {/* Header Stats */}
             <div className="w-full flex justify-between items-end px-4">
               <div className="space-y-1">
-                <div className="text-[10px] text-zinc-500 font-bold uppercase tracking-[0.2em]">{selectedSong.title} • <span style={{ color: selectedDifficulty.color }}>{selectedDifficulty.name}</span></div>
+                <div className="text-[10px] text-zinc-500 font-bold uppercase tracking-[0.2em]">{selectedSong.title} • <span style={{ color: selectedDifficulty.color }} className="italic">{selectedDifficulty.name} MODE</span></div>
                 <div className="flex items-center gap-2">
-                  <div className="text-4xl font-mono font-light tabular-nums">
+                  <div className={`text-4xl font-mono font-light tabular-nums ${selectedDifficulty.name === 'MASTER' ? 'text-orange-500 drop-shadow-[0_0_10px_rgba(249,115,22,0.3)]' : 'text-white'}`}>
                     {score.score.toLocaleString().padStart(7, '0')}
                   </div>
                 </div>
               </div>
               
               <div className="flex gap-4 items-center">
-                <button 
-                  onClick={togglePause}
-                  className="p-3 bg-zinc-900 border border-zinc-800 rounded-xl hover:border-zinc-700 transition-colors"
-                >
-                  <Pause className="w-6 h-6" />
-                </button>
                 <div className="space-y-1 text-right">
                   <div className="text-[10px] text-zinc-500 font-bold uppercase tracking-[0.2em]">Max Combo</div>
-                  <div className="text-2xl font-mono font-light tabular-nums text-zinc-400">
+                  <div className={`text-2xl font-mono font-light tabular-nums ${selectedDifficulty.name === 'MASTER' ? 'text-orange-400' : 'text-zinc-400'}`}>
                     {score.maxCombo}
                   </div>
                 </div>
@@ -1057,13 +1250,34 @@ export default function App() {
                       initial={{ opacity: 0, scale: 2, y: 0 }}
                       animate={{ opacity: 1, scale: 1, y: 0 }}
                       exit={{ opacity: 0, scale: 0.5 }}
-                      className={`text-6xl font-black italic tracking-tighter drop-shadow-2xl ${
-                        lastJudgement === 'PERFECT' ? 'text-[#FFD700] drop-shadow-[0_0_20px_rgba(255,215,0,0.8)]' :
-                        lastJudgement === 'GOOD' ? 'text-emerald-400' :
-                        lastJudgement === 'OKAY' ? 'text-amber-400' : 'text-rose-500'
-                      }`}
+                      className="flex flex-col items-center"
                     >
-                      {lastJudgement}
+                      <div className={`text-6xl font-black italic tracking-tighter drop-shadow-2xl ${
+                        lastJudgement.includes('PERFECT') ? 'text-[#FFD700] drop-shadow-[0_0_20px_rgba(255,215,0,0.8)]' :
+                        lastJudgement.includes('GREAT') ? 'text-emerald-400' :
+                        lastJudgement.includes('GOOD') ? 'text-blue-400' :
+                        lastJudgement.includes('OKAY') ? 'text-amber-400' : 'text-rose-500'
+                      }`}>
+                        {lastJudgement.split(' ').pop()}
+                      </div>
+                      {lastJudgement.includes('EARLY') && (
+                        <motion.div 
+                          initial={{ opacity: 0, y: -10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          className="text-xs font-black uppercase tracking-[0.4em] text-blue-400 mt-1 drop-shadow-md"
+                        >
+                          Early
+                        </motion.div>
+                      )}
+                      {lastJudgement.includes('LATE') && (
+                        <motion.div 
+                          initial={{ opacity: 0, y: -10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          className="text-xs font-black uppercase tracking-[0.4em] text-orange-400 mt-1 drop-shadow-md"
+                        >
+                          Late
+                        </motion.div>
+                      )}
                     </motion.div>
                   )}
                 </AnimatePresence>
@@ -1072,7 +1286,7 @@ export default function App() {
                     <motion.span
                       initial={{ scale: 1.5 }}
                       animate={{ scale: 1 }}
-                      className="inline-block text-white"
+                      className={`inline-block ${selectedDifficulty.name === 'MASTER' ? 'text-orange-500 drop-shadow-[0_0_15px_rgba(249,115,22,0.5)]' : 'text-white'}`}
                     >
                       {score.combo}x
                     </motion.span>
@@ -1176,40 +1390,77 @@ export default function App() {
               </div>
             </div>
             
-            <h2 className="text-4xl font-black italic tracking-tighter mb-2 uppercase">Session Complete</h2>
-            <p className="text-zinc-500 text-sm uppercase tracking-widest mb-4">{selectedSong.title} by {selectedSong.artist}</p>
+            {/* Results Header */}
+            <div className="text-center mb-10">
+              <motion.div
+                initial={{ scale: 0.5, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                className="inline-block px-6 py-2 bg-blue-500 text-black font-black italic text-sm rounded-full mb-4"
+              >
+                TRACK COMPLETE
+              </motion.div>
+              <h2 className="text-4xl font-black italic tracking-tighter mb-2 uppercase">Session Complete</h2>
+              <p className="text-zinc-500 text-sm uppercase tracking-widest mb-4">{selectedSong.title} by {selectedSong.artist}</p>
+              
+              <div className="flex justify-center gap-4 mt-6">
+                {score.miss === 0 && (
+                  <motion.div
+                    initial={{ y: 20, opacity: 0 }}
+                    animate={{ y: 0, opacity: 1 }}
+                    transition={{ delay: 0.5 }}
+                    className="px-4 py-2 bg-amber-500 text-black font-black italic text-xs rounded-lg shadow-[0_0_15px_rgba(245,158,11,0.3)]"
+                  >
+                    FULL COMBO
+                  </motion.div>
+                )}
+                {score.miss === 0 && score.great === 0 && score.good === 0 && score.okay === 0 && (
+                  <motion.div
+                    initial={{ y: 20, opacity: 0 }}
+                    animate={{ y: 0, opacity: 1 }}
+                    transition={{ delay: 0.7 }}
+                    className="px-4 py-2 bg-white text-black font-black italic text-xs rounded-lg shadow-[0_0_15px_rgba(255,255,255,0.3)]"
+                  >
+                    ALL PERFECT
+                  </motion.div>
+                )}
+              </div>
+            </div>
             <p style={{ color: selectedDifficulty.color }} className="text-[10px] uppercase tracking-widest mb-12 font-black italic">{selectedDifficulty.name} DIFFICULTY</p>
 
             <div className="grid grid-cols-2 gap-8 mb-12">
-              <div className="text-left space-y-4">
-                <div className="flex justify-between items-center border-b border-zinc-800 pb-2">
-                  <span className="text-zinc-500 text-xs font-bold uppercase tracking-widest">Perfect</span>
-                  <span className="text-blue-400 font-mono font-bold">{score.perfect}</span>
+              <div className="text-left space-y-3">
+                <div className="flex justify-between items-center border-b border-zinc-800 pb-1">
+                  <span className="text-zinc-500 text-[10px] font-bold uppercase tracking-widest">Perfect</span>
+                  <span className="text-amber-400 font-mono font-bold">{score.perfect}</span>
                 </div>
-                <div className="flex justify-between items-center border-b border-zinc-800 pb-2">
-                  <span className="text-zinc-500 text-xs font-bold uppercase tracking-widest">Great</span>
+                <div className="flex justify-between items-center border-b border-zinc-800 pb-1">
+                  <span className="text-zinc-500 text-[10px] font-bold uppercase tracking-widest">Great</span>
                   <span className="text-emerald-400 font-mono font-bold">{score.great}</span>
                 </div>
-                <div className="flex justify-between items-center border-b border-zinc-800 pb-2">
-                  <span className="text-zinc-500 text-xs font-bold uppercase tracking-widest">Good</span>
-                  <span className="text-amber-400 font-mono font-bold">{score.good}</span>
+                <div className="flex justify-between items-center border-b border-zinc-800 pb-1">
+                  <span className="text-zinc-500 text-[10px] font-bold uppercase tracking-widest">Good</span>
+                  <span className="text-blue-400 font-mono font-bold">{score.good}</span>
                 </div>
-                <div className="flex justify-between items-center border-b border-zinc-800 pb-2">
-                  <span className="text-zinc-500 text-xs font-bold uppercase tracking-widest">Miss</span>
+                <div className="flex justify-between items-center border-b border-zinc-800 pb-1">
+                  <span className="text-zinc-500 text-[10px] font-bold uppercase tracking-widest">Okay</span>
+                  <span className="text-amber-600 font-mono font-bold">{score.okay}</span>
+                </div>
+                <div className="flex justify-between items-center border-b border-zinc-800 pb-1">
+                  <span className="text-zinc-500 text-[10px] font-bold uppercase tracking-widest">Miss</span>
                   <span className="text-rose-500 font-mono font-bold">{score.miss}</span>
                 </div>
               </div>
               
-              <div className="flex flex-col justify-center items-center bg-white/5 rounded-2xl p-6 border border-white/5">
-                <div className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest mb-1">Total Score</div>
-                <div className="text-4xl font-black italic tracking-tighter text-white">
-                  {score.score.toLocaleString()}
+                <div className="flex flex-col justify-center items-center bg-white/5 rounded-2xl p-6 border border-white/5 shadow-inner">
+                  <div className="text-[10px] text-zinc-500 font-bold uppercase tracking-widest mb-1">Final Score</div>
+                  <div className={`text-4xl font-black italic tracking-tighter ${selectedDifficulty.name === 'MASTER' ? 'text-orange-500' : 'text-white'}`}>
+                    {score.score.toLocaleString()}
+                  </div>
+                  <div className="mt-4 text-[10px] text-zinc-500 font-bold uppercase tracking-widest mb-1">Best Combo</div>
+                  <div className="text-2xl font-black italic tracking-tighter text-zinc-400">
+                    {score.maxCombo}
+                  </div>
                 </div>
-                <div className="mt-4 text-[10px] text-zinc-500 font-bold uppercase tracking-widest mb-1">Max Combo</div>
-                <div className="text-2xl font-black italic tracking-tighter text-zinc-300">
-                  {score.maxCombo}
-                </div>
-              </div>
             </div>
 
             <div className="flex gap-4 mb-4">
